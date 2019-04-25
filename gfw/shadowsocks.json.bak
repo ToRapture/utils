@@ -1,0 +1,8 @@
+{
+    "server": "your-server",
+    "server_port": 114514,
+    "local_port": 1080,
+    "password": "orz",
+    "timeout": 600,
+    "method": "rc4-md5"
+}
