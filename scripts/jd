@@ -1,0 +1,27 @@
+#!/bin/bash
+
+MKTEMP="mktemp"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    MKTEMP="gmktemp"
+fi
+
+# Precondition check
+which jq > /dev/null || (echo "jq is required" && exit 1)
+
+json1="$1"
+json2="$2"
+stat "$json1" > /dev/null || exit $?
+stat "$json2" > /dev/null || exit $?
+
+# Main
+sorted1=$(${MKTEMP} --suffix=.jsondiff)
+sorted2=$(${MKTEMP} --suffix=.jsondiff)
+
+jq -S . "$json1" > "$sorted1"
+jq -S . "$json2" > "$sorted2"
+
+vimdiff "$sorted1" "$sorted2"
+
+# Tear down
+rm "$sorted1"
+rm "$sorted2"
