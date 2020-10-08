@@ -109,3 +109,6 @@ venv.bak/
 # sslocal
 shadowsocks.json
 nohup.out
+
+# others
+weibo-rank-data

@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+
+import argparse
+import datetime
+import itertools
+import json
+import logging
+import multiprocessing
+import os
+import queue
+import sys
+import threading
+
+import dateutil.parser
+import requests
+
+STEP_PER_MINUTE = 2
+DATA_OUTPUT_PATH = 'weibo-rank-data'
+
+
+class HTTPNotSuccessError(Exception):
+    pass
+
+
+class TimeIDExceededError(Exception):
+    pass
+
+
+class Time:
+    def __init__(self, time_id: int, date: datetime.datetime):
+        self.time_id = time_id
+        self.date = date
+
+    @classmethod
+    def latest(cls):
+        resp = requests.get('https://www.eecso.com/test/weibo/apis/getlatest.php')
+        if resp.status_code != 200:
+            raise HTTPNotSuccessError
+        resp_json = resp.json()
+        return cls(int(resp_json[0]), dateutil.parser.parse(resp_json[1]))
+
+    @classmethod
+    def from_time_id(cls, time_id: int):
+        resp = requests.get('https://www.eecso.com/test/weibo/apis/getlatest.php?timeid=%s' % time_id)
+        if resp.status_code != 200:
+            raise HTTPNotSuccessError
+        resp_json = resp.json()
+
+        if resp_json[1] is None:
+            raise TimeIDExceededError
+
+        return cls(int(resp_json[0]), dateutil.parser.parse(resp_json[1]))
+
+
+def init_log():
+    logging.basicConfig(format='[%(levelname)s] %(asctime)s %(filename)s:%(lineno)s %(message)s', level=logging.INFO)
+
+
+def query_id_of_time(time_text):
+    t = dateutil.parser.parse(time_text)
+    now = Time.latest()
+    time_id = int((t - now.date).total_seconds()) // 60 // STEP_PER_MINUTE + now.time_id
+    return time_id
+
+
+def crawl_rank(t: Time, output: str):
+    path = os.path.join(output, DATA_OUTPUT_PATH, t.date.strftime('%Y-%m-%d'))
+    os.makedirs(path, exist_ok=True)
+
+    filename = os.path.join(path, '%s-%s.json' % (t.time_id, t.date.strftime('%Y-%m-%d %H-%M-%S')))
+    if os.path.exists(filename):
+        logging.info('file[%s] exists, skipping time_id[%s]', filename, t.time_id)
+        return
+
+    resp = requests.get('https://www.eecso.com/test/weibo/apis/currentitems.php?timeid=%s' % t.time_id)
+    if resp.status_code != 200:
+        raise HTTPNotSuccessError
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(json.dumps(resp.json(), indent=4, ensure_ascii=False))
+
+    logging.info('save rank of time_id[%s] into file[%s]', t.time_id, filename)
+
+
+def crawl_rank_from(startid: int, endtime: str, step: int, output: str):
+    que = queue.Queue()
+    lock = threading.Lock()
+    fails = []
+    success = 0
+
+    def worker_func():
+        while True:
+            try:
+                time_id = que.get()
+                t = Time.from_time_id(time_id)
+                crawl_rank(t, output)
+                nonlocal success
+                success += 1
+            except TimeIDExceededError:
+                pass
+            except requests.RequestException as e:
+                lock.acquire()
+                fails.append(time_id)
+                lock.release()
+
+                logging.error('requests error, time_id[%s], exception[%s]', time_id, e)
+            finally:
+                que.task_done()
+
+    workers = []
+    for i in range(multiprocessing.cpu_count()):
+        worker = threading.Thread(target=worker_func, daemon=True)
+        worker.start()
+        workers.append(worker)
+
+    endtime_id = query_id_of_time(endtime)
+
+    for time_id in itertools.count(start=startid, step=step):
+        que.put(time_id)
+        if time_id >= endtime_id:
+            break
+
+    que.join()
+    logging.info('success[%s], len(fails): %s, fails: %s', success, len(fails), fails)
+
+
+if __name__ == '__main__':
+    init_log()
+
+    parser = argparse.ArgumentParser(description='Get ranks of Weibo.')
+    parser.add_argument('--startid', dest='startid', action='store', type=int, help='start id of the query')
+    parser.add_argument('--endtime', dest='endtime', action='store', type=str, help='ending time of the query')
+    parser.add_argument('--step', dest='step', default=30, action='store', type=int, help='step in the unit of minute')
+    parser.add_argument('--output', dest='output', default=os.getcwd(), action='store', type=str, help='output directory')
+    parser.add_argument('--query', dest='query', action='store', type=str, help='query time id of a given time')
+    args = parser.parse_args()
+
+    if args.query:
+        print(query_id_of_time(args.query))
+        sys.exit(0)
+
+    step = args.step // STEP_PER_MINUTE
+
+    startid = args.startid
+    if not startid:
+        startid = Time.latest().time_id
+
+    endtime = args.endtime
+    if not endtime:
+        endtime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    crawl_rank_from(startid, endtime, step, args.output)
