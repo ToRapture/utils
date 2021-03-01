@@ -66,10 +66,17 @@ class Downloader:
             works[i % self.threads].append(t)
 
         def _run_thread(tweets, failed):
+            failed_count = 0
             for t in tweets:
+                if failed_count >= 10:
+                    failed.append(t)
+                    continue
                 success = self.save_one_media(t)
                 if not success:
                     failed.append(t)
+                    failed_count += 1
+                else:
+                    failed_count = 0
 
         threads = []
         for i in range(self.threads):
