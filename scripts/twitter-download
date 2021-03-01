@@ -37,45 +37,65 @@ class Downloader:
 
         self.tweets = tweets_merged
 
+    def get_tweet_path(self, tweet):
+        date = dateutil.parser.parse(tweet.datetime)
+        tweet_path = os.path.join(self.output_dir, self.username, '%s %s' % (date.strftime('%Y-%m-%d %H-%M-%S %Z'), tweet.id))
+        return tweet_path
+
     def save_tweets(self):
         for t in self.tweets:
             self.save_one_tweet(t)
 
     def save_one_tweet(self, tweet):
-        date = dateutil.parser.parse(tweet.datetime)
-        tweet_path = os.path.join(self.output_dir, self.username, '%s %s' % (date.strftime('%Y-%m-%d %H-%M-%S %Z'), tweet.id))
+        tweet_path = self.get_tweet_path(tweet)
         file_path = os.path.join(tweet_path, 'content.json')
         os.makedirs(tweet_path, exist_ok=True)
         with open(file_path, 'w') as f:
             json.dump(tweet.__dict__, f, indent=2, ensure_ascii=False)
 
+    def save_failed(self, failed):
+        with open(os.path.join(self.output_dir, 'failed.txt'), 'w') as f:
+            for t in failed:
+                tweet_path = self.get_tweet_path(t)
+                f.write('you-get %s -o "%s"\n' % (t.link, tweet_path))
+
     def save_medias(self):
         works = [[] for i in range(self.threads)]
-        failed_links = [[] for i in range(self.threads)]
+        failed_tweets = [[] for i in range(self.threads)]
         for i, t in enumerate(self.tweets):
             works[i % self.threads].append(t)
 
         def _run_thread(tweets, failed):
             for t in tweets:
-                returncode = self.save_one_media(t)
-                if returncode:
-                    failed.append(t.link)
+                success = self.save_one_media(t)
+                if not success:
+                    failed.append(t)
 
         threads = []
         for i in range(self.threads):
-            thread = threading.Thread(target=_run_thread, args=(works[i], failed_links[i]))
+            thread = threading.Thread(target=_run_thread, args=(works[i], failed_tweets[i]))
             threads.append(thread)
             thread.start()
         for thread in threads:
             thread.join()
 
-        failed = sum(failed_links, [])
-        logging.info('%d tweets save media failed: %s' % (len(failed), failed))
+        failed = sum(failed_tweets, [])
+        logging.info('%d tweets save media failed' % len(failed))
+
+        self.save_failed(failed)
 
     def save_one_media(self, tweet):
-        date = dateutil.parser.parse(tweet.datetime)
-        tweet_path = os.path.join(self.output_dir, self.username, '%s %s' % (date.strftime('%Y-%m-%d %H-%M-%S %Z'), tweet.id))
-        return subprocess.call(['you-get', tweet.link, '-o', tweet_path])
+        tweet_path = self.get_tweet_path(tweet)
+
+        if os.path.exists(os.path.join(tweet_path, 'finished')):
+            return True
+
+        returncode = subprocess.call(['you-get', tweet.link, '-o', tweet_path, '-t', '10'])
+        if returncode == 0:
+            with open(os.path.join(tweet_path, 'finished'), 'w'):
+                pass
+            return True
+        return False
 
     def run(self):
         self.get_tweets()
