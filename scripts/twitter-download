@@ -4,10 +4,11 @@ import argparse
 import json
 import logging
 import os
-import subprocess
 import threading
+from urllib import parse
 
 import dateutil.parser
+import requests
 import twint
 
 
@@ -35,29 +36,26 @@ class Downloader:
         tweets_merged = tweets_search + [t for t in tweets_profile if t.id not in ids_from_search]
         logging.info('get %d tweets after merged' % len(tweets_merged))
 
-        self.tweets = tweets_merged
+        self.tweets = [t.__dict__ for t in tweets_merged]
 
     def get_tweet_path(self, tweet):
-        date = dateutil.parser.parse(tweet.datetime)
-        tweet_path = os.path.join(self.output_dir, self.username, '%s %s' % (date.strftime('%Y-%m-%d %H-%M-%S %Z'), tweet.id))
+        date = dateutil.parser.parse(tweet['datetime'])
+        tweet_path = os.path.join(self.output_dir, self.username,
+                                  '%s %s' % (date.strftime('%Y-%m-%d %H-%M-%S %Z'), tweet['id']))
         return tweet_path
 
     def save_tweets(self):
         for t in self.tweets:
             self.save_one_tweet(t)
+        with open(os.path.join(self.output_dir, self.username, 'list_finished'), 'w'):
+            pass
 
     def save_one_tweet(self, tweet):
         tweet_path = self.get_tweet_path(tweet)
         file_path = os.path.join(tweet_path, 'content.json')
         os.makedirs(tweet_path, exist_ok=True)
         with open(file_path, 'w') as f:
-            json.dump(tweet.__dict__, f, indent=2, ensure_ascii=False)
-
-    def save_failed(self, failed):
-        with open(os.path.join(self.output_dir, 'failed.txt'), 'w') as f:
-            for t in failed:
-                tweet_path = self.get_tweet_path(t)
-                f.write('you-get %s -o "%s"\n' % (t.link, tweet_path))
+            json.dump(tweet, f, indent=2, ensure_ascii=False)
 
     def save_medias(self):
         works = [[] for i in range(self.threads)]
@@ -89,24 +87,58 @@ class Downloader:
         failed = sum(failed_tweets, [])
         logging.info('%d tweets save media failed' % len(failed))
 
-        self.save_failed(failed)
-
     def save_one_media(self, tweet):
         tweet_path = self.get_tweet_path(tweet)
 
         if os.path.exists(os.path.join(tweet_path, 'finished')):
             return True
 
-        returncode = subprocess.call(['you-get', tweet.link, '-o', tweet_path, '-t', '10'])
-        if returncode == 0:
+        urls = tweet['photos']
+        if tweet['video']:
+            urls += [tweet['video']]
+
+        succeed_cnt = 0
+        for url in urls:
+            media_name = parse.urlparse(url).path.split('/')[-1]
+            media_path = os.path.join(tweet_path, media_name)
+            if os.path.exists(media_path):
+                succeed_cnt += 1
+                logging.info('file: %s exists, skip', media_path)
+                continue
+            try:
+                resp = requests.get(url)
+                with open(media_path, 'wb') as f:
+                    f.write(resp.content)
+                succeed_cnt += 1
+                logging.info('downloaded url: %s to %s', url, media_path)
+            except requests.RequestException:
+                logging.error('download url: %s failed', url)
+
+        if succeed_cnt == len(urls):
             with open(os.path.join(tweet_path, 'finished'), 'w'):
                 pass
             return True
         return False
 
+    def need_get_tweets(self):
+        return not os.path.exists(os.path.join(self.output_dir, self.username, 'list_finished'))
+
+    def load_tweets(self):
+        logging.info('load tweets')
+        for d in os.listdir(os.path.join(self.output_dir, self.username)):
+            if not os.path.isdir(os.path.join(self.output_dir, self.username, d)):
+                continue
+            with open(os.path.join(self.output_dir, self.username, d, 'content.json')) as f:
+                self.tweets.append(json.load(f))
+
+        logging.info('load %d tweets' % len(self.tweets))
+
     def run(self):
-        self.get_tweets()
-        self.save_tweets()
+        if self.need_get_tweets():
+            self.get_tweets()
+            self.save_tweets()
+        else:
+            self.load_tweets()
         self.save_medias()
 
 
@@ -119,7 +151,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Download all tweets from Twitter.')
     parser.add_argument('--username', dest='username', required=True, action='store', type=str, help='username')
-    parser.add_argument('--output', dest='output', default=os.getcwd(), action='store', type=str, help='output directory')
+    parser.add_argument('--output', dest='output', default=os.getcwd(), action='store', type=str,
+                        help='output directory')
     parser.add_argument('--threads', dest='threads', default=8, action='store', type=int, help='number of threads')
     args = parser.parse_args()
 
