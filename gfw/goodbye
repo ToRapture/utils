@@ -1,3 +1,6 @@
 #!/bin/bash
 
-nohup sslocal -c shadowsocks.json &
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+
+pkill sslocal
+nohup sslocal -c $DIR/config.json 1>$DIR/log 2>&1 &
